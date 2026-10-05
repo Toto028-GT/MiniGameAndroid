@@ -16,7 +16,7 @@ public class GameView extends View {
     private GameState gameState = GameState.START;
 
     // ---------------- Paramètres ----------------
-    private static final int ROWS = 5;
+    private static final int ROWS = 7;
     private static final int COLS = 7;
     private static final int START_LIVES = 3;
 
@@ -44,6 +44,17 @@ public class GameView extends View {
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF tmpRect = new RectF();
 
+    // ---------------- Joystick flottant ----------------
+    private boolean joyActive = false;
+    private boolean joyMoved = false;
+    private float joyBaseX, joyBaseY;      // où le doigt a touché l'écran
+    private float joyKnobX, joyKnobY;      // position du petit rond
+    private float joyRadius;               // rayon max du joystick
+    private float joyInput = 0f;           // -1 (gauche) .. +1 (droite)
+    private float paddleMaxSpeed;          // px / tick à fond de joystick
+    private final Paint joyBasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint joyKnobPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
     public GameView(Context context) {
         super(context);
         setBackgroundColor(Color.rgb(20, 24, 38));
@@ -51,6 +62,10 @@ public class GameView extends View {
         paddlePaint.setColor(Color.rgb(0, 200, 220));
         textPaint.setColor(Color.WHITE);
         textPaint.setTextSize(56);
+        joyBasePaint.setColor(Color.WHITE);
+        joyBasePaint.setAlpha(30);
+        joyKnobPaint.setColor(Color.WHITE);
+        joyKnobPaint.setAlpha(90);
     }
 
     // ==================== Boucle de jeu ====================
@@ -89,6 +104,8 @@ public class GameView extends View {
         ballRadius = w * 0.022f;
         ballSpeed = w * 0.012f;
         textPaint.setTextSize(w * 0.055f);
+        joyRadius = w * 0.08f;
+        paddleMaxSpeed = w * 0.035f;
 
         // Grille de briques adaptée à la taille de l'écran
         float margin = w * 0.04f;
@@ -135,6 +152,10 @@ public class GameView extends View {
     // ==================== Mise à jour ====================
     private void update() {
         if (gameState != GameState.PLAYING) return;
+
+        float half = paddleW / 2f;
+        paddleX += joyInput * paddleMaxSpeed;   // si vous avez le delta-temps : * dt
+        paddleX = Math.max(half, Math.min(getWidth() - half, paddleX));
 
         // Balle posée : elle suit la passerelle
         if (ballStuck) {
@@ -189,30 +210,48 @@ public class GameView extends View {
     }
 
     private void collideBricks() {
+        int hit = -1;
+        float bestDist = Float.MAX_VALUE;
+
+        // 1. Trouver la brique la PLUS PROCHE parmi celles qui touchent la balle
         for (int i = 0; i < bricks.length; i++) {
             if (!brickAlive[i]) continue;
             RectF b = bricks[i];
-
-            // Point du rectangle le plus proche du centre de la balle
             float cx = Math.max(b.left, Math.min(ballX, b.right));
             float cy = Math.max(b.top, Math.min(ballY, b.bottom));
             float dx = ballX - cx;
             float dy = ballY - cy;
-
-            if (dx * dx + dy * dy <= ballRadius * ballRadius) {
-                brickAlive[i] = false;
-                bricksLeft--;
-                score += 10;
-
-                // Rebond horizontal si on touche un côté, vertical sinon
-                boolean side = ballX < b.left || ballX > b.right;
-                if (side) {
-                    ballVX = (ballX < b.left) ? -Math.abs(ballVX) : Math.abs(ballVX);
-                } else {
-                    ballVY = (ballY < b.top) ? -Math.abs(ballVY) : Math.abs(ballVY);
-                }
-                return; // une seule brique par tick
+            float d2 = dx * dx + dy * dy;
+            if (d2 <= ballRadius * ballRadius && d2 < bestDist) {
+                bestDist = d2;
+                hit = i;
             }
+        }
+        if (hit < 0) return;
+
+        // 2. Détruire la brique
+        brickAlive[hit] = false;
+        bricksLeft--;
+        score += 10;
+
+        // 3. Choisir l'axe selon la direction de l'écart le plus grand
+        RectF b = bricks[hit];
+        float cx = Math.max(b.left, Math.min(ballX, b.right));
+        float cy = Math.max(b.top, Math.min(ballY, b.bottom));
+        float dx = ballX - cx;
+        float dy = ballY - cy;
+
+        if (dx == 0 && dy == 0) {
+            // Centre dans la brique : on se base sur la vitesse
+            ballVY = -ballVY;
+        } else if (Math.abs(dx) > Math.abs(dy)) {
+            // Choc latéral
+            if (dx < 0) { ballVX = -Math.abs(ballVX); ballX = b.left - ballRadius; }
+            else        { ballVX =  Math.abs(ballVX); ballX = b.right + ballRadius; }
+        } else {
+            // Choc vertical
+            if (dy < 0) { ballVY = -Math.abs(ballVY); ballY = b.top - ballRadius; }
+            else        { ballVY =  Math.abs(ballVY); ballY = b.bottom + ballRadius; }
         }
     }
 
@@ -263,6 +302,11 @@ public class GameView extends View {
         if (ballStuck) {
             drawCentered(canvas, "Toucher pour lancer", getHeight() * 0.65f);
         }
+
+        if (joyActive) {
+            canvas.drawCircle(joyBaseX, joyBaseY, joyRadius, joyBasePaint);
+            canvas.drawCircle(joyKnobX, joyKnobY, joyRadius * 0.4f, joyKnobPaint);
+        }
     }
 
     private void drawGameOverScreen(Canvas canvas) {
@@ -274,34 +318,66 @@ public class GameView extends View {
     // ==================== Interaction tactile ====================
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        int action = event.getAction();
+        int action = event.getActionMasked();
 
         switch (gameState) {
             case START:
+            case GAME_OVER:
                 if (action == MotionEvent.ACTION_DOWN) {
                     resetGame();
+                    resetJoystick();
                     gameState = GameState.PLAYING;
                 }
                 break;
 
             case PLAYING:
-                // La passerelle suit le doigt horizontalement
-                if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
-                    float half = paddleW / 2f;
-                    paddleX = Math.max(half, Math.min(getWidth() - half, event.getX()));
-                }
-                if (action == MotionEvent.ACTION_DOWN && ballStuck) {
-                    launchBall();
-                }
-                break;
+                switch (action) {
+                    case MotionEvent.ACTION_DOWN:
+                        joyActive = true;
+                        joyMoved = false;
+                        joyBaseX = joyKnobX = event.getX();
+                        joyBaseY = joyKnobY = event.getY();
+                        joyInput = 0f;
+                        break;
 
-            case GAME_OVER:
-                if (action == MotionEvent.ACTION_DOWN) {
-                    resetGame();
-                    gameState = GameState.PLAYING;
+                    case MotionEvent.ACTION_MOVE:
+                        if (!joyActive) break;
+                        float dx = event.getX() - joyBaseX;
+                        float dy = event.getY() - joyBaseY;
+
+                        // Le rond reste dans le cercle du joystick
+                        float dist = (float) Math.hypot(dx, dy);
+                        if (dist > joyRadius) {
+                            dx *= joyRadius / dist;
+                            dy *= joyRadius / dist;
+                        }
+                        joyKnobX = joyBaseX + dx;
+                        joyKnobY = joyBaseY + dy;
+
+                        // Seul l'axe horizontal commande la passerelle
+                        joyInput = dx / joyRadius;
+                        if (Math.abs(joyInput) < 0.01f) joyInput = 0f;   // zone morte
+                        else joyMoved = true;
+                        break;
+
+                    case MotionEvent.ACTION_UP:
+                        // Un simple tap (sans bouger) lance la balle
+                        if (ballStuck && !joyMoved) launchBall();
+                        resetJoystick();
+                        break;
+
+                    case MotionEvent.ACTION_CANCEL:
+                        resetJoystick();
+                        break;
                 }
                 break;
         }
         return true;
+    }
+
+    private void resetJoystick() {
+        joyActive = false;
+        joyMoved = false;
+        joyInput = 0f;
     }
 }
