@@ -5,15 +5,22 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.View;
 
 
-public class GameView extends View {
+public class GameView extends View implements SensorEventListener {
 
     enum GameState { START, PLAYING, GAME_OVER }
+    enum ControlMode { JOYSTICK, TILT }
 
     private GameState gameState = GameState.START;
+    private ControlMode controlMode = ControlMode.JOYSTICK;
 
     // ---------------- Paramètres ----------------
     private static final int ROWS = 7;
@@ -55,6 +62,14 @@ public class GameView extends View {
     private final Paint joyBasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint joyKnobPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
+    // ---------------- Inclinaison de la tablette ----------------
+    private static final float TILT_SENSITIVITY = 4f;
+    private final SensorManager sensorManager;
+    private final Sensor accelerometer;
+    private boolean sensorRegistered;
+    private float tiltX;
+    private float tiltInput;
+
     public GameView(Context context) {
         super(context);
         setBackgroundColor(Color.rgb(20, 24, 38));
@@ -66,6 +81,11 @@ public class GameView extends View {
         joyBasePaint.setAlpha(30);
         joyKnobPaint.setColor(Color.WHITE);
         joyKnobPaint.setAlpha(90);
+
+        sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
+        accelerometer = sensorManager == null
+                ? null
+                : sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
     }
 
     // ==================== Boucle de jeu ====================
@@ -80,11 +100,13 @@ public class GameView extends View {
 
     public void startGame() {
         removeCallbacks(gameLoop);
+        registerTiltSensor();
         post(gameLoop);
     }
 
     public void stopGame() {
         removeCallbacks(gameLoop);
+        unregisterTiltSensor();
     }
 
     @Override
@@ -102,10 +124,10 @@ public class GameView extends View {
         paddleH = h * 0.025f;
         paddleTop = h - h * 0.10f - paddleH;
         ballRadius = w * 0.022f;
-        ballSpeed = w * 0.012f;
+        ballSpeed = w * 0.01f;
         textPaint.setTextSize(w * 0.055f);
         joyRadius = w * 0.08f;
-        paddleMaxSpeed = w * 0.035f;
+        paddleMaxSpeed = w * 0.015f;
 
         // Grille de briques adaptée à la taille de l'écran
         float margin = w * 0.04f;
@@ -154,15 +176,16 @@ public class GameView extends View {
         if (gameState != GameState.PLAYING) return;
 
         float half = paddleW / 2f;
-        paddleX += joyInput * paddleMaxSpeed;   // si vous avez le delta-temps : * dt
-        paddleX = Math.max(half, Math.min(getWidth() - half, paddleX));
-
-        // Balle posée : elle suit la passerelle
+        // Pendant l'attente du lancement, la passerelle reste immobile.
         if (ballStuck) {
             ballX = paddleX;
             ballY = paddleTop - ballRadius;
             return;
         }
+
+        float horizontalInput = controlMode == ControlMode.TILT ? tiltInput : joyInput;
+        paddleX += horizontalInput * paddleMaxSpeed;   // si vous avez le delta-temps : * dt
+        paddleX = Math.max(half, Math.min(getWidth() - half, paddleX));
 
         ballX += ballVX;
         ballY += ballVY;
@@ -273,9 +296,18 @@ public class GameView extends View {
 
     private void drawStartScreen(Canvas canvas) {
         drawCentered(canvas, "CASSE-BRIQUES", getHeight() * 0.35f);
-        drawCentered(canvas, "Glissez le doigt pour", getHeight() * 0.48f);
-        drawCentered(canvas, "déplacer la passerelle", getHeight() * 0.53f);
-        drawCentered(canvas, "Toucher pour jouer", getHeight() * 0.65f);
+        if (controlMode == ControlMode.JOYSTICK) {
+            drawCentered(canvas, "Glissez le doigt pour", getHeight() * 0.48f);
+            drawCentered(canvas, "déplacer la passerelle", getHeight() * 0.53f);
+        } else {
+            drawCentered(canvas, "Inclinez la tablette pour", getHeight() * 0.48f);
+            drawCentered(canvas, "déplacer la passerelle", getHeight() * 0.53f);
+        }
+        drawCentered(canvas, "Choisir le contrôle", getHeight() * 0.64f);
+        drawCentered(canvas, controlMode == ControlMode.JOYSTICK
+                ? "[ JOYSTICK ]     INCLINAISON"
+                : "JOYSTICK     [ INCLINAISON ]", getHeight() * 0.72f);
+        drawCentered(canvas, "Toucher ici pour jouer", getHeight() * 0.84f);
     }
 
     private void drawGame(Canvas canvas) {
@@ -324,6 +356,19 @@ public class GameView extends View {
             case START:
             case GAME_OVER:
                 if (action == MotionEvent.ACTION_DOWN) {
+                    if (gameState == GameState.START && event.getY() >= getHeight() * 0.67f
+                            && event.getY() <= getHeight() * 0.78f) {
+                        controlMode = event.getX() < getWidth() / 2f
+                                ? ControlMode.JOYSTICK
+                                : ControlMode.TILT;
+                        if (controlMode == ControlMode.TILT) {
+                            registerTiltSensor();
+                        } else {
+                            unregisterTiltSensor();
+                        }
+                        invalidate();
+                        break;
+                    }
                     resetGame();
                     resetJoystick();
                     gameState = GameState.PLAYING;
@@ -331,6 +376,12 @@ public class GameView extends View {
                 break;
 
             case PLAYING:
+                if (controlMode == ControlMode.TILT) {
+                    if (action == MotionEvent.ACTION_UP && ballStuck) {
+                        launchBall();
+                    }
+                    return true;
+                }
                 switch (action) {
                     case MotionEvent.ACTION_DOWN:
                         joyActive = true;
@@ -379,5 +430,69 @@ public class GameView extends View {
         joyActive = false;
         joyMoved = false;
         joyInput = 0f;
+    }
+
+    private void registerTiltSensor() {
+        if (controlMode != ControlMode.TILT || sensorRegistered
+                || sensorManager == null || accelerometer == null) {
+            return;
+        }
+        sensorRegistered = sensorManager.registerListener(
+                this, accelerometer, SensorManager.SENSOR_DELAY_GAME);
+        if (!sensorRegistered) {
+            controlMode = ControlMode.JOYSTICK;
+        }
+    }
+
+    private void unregisterTiltSensor() {
+        if (!sensorRegistered || sensorManager == null) {
+            return;
+        }
+        sensorManager.unregisterListener(this);
+        sensorRegistered = false;
+        tiltX = 0f;
+        tiltInput = 0f;
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        if (event.sensor.getType() != Sensor.TYPE_ACCELEROMETER
+                || controlMode != ControlMode.TILT) {
+            return;
+        }
+
+        // L'axe horizontal depend de la rotation actuelle de l'ecran.
+        float screenHorizontalAcceleration = getScreenHorizontalAcceleration(event.values);
+
+        // Filtre passe-bas : les petits tremblements de la tablette sont attenues.
+        tiltX = tiltX * 0.85f + screenHorizontalAcceleration * 0.15f;
+        float input = -tiltX / TILT_SENSITIVITY;
+        if (Math.abs(input) < 0.08f) {
+            input = 0f;
+        }
+        tiltInput = Math.max(-1f, Math.min(1f, input));
+    }
+
+    private float getScreenHorizontalAcceleration(float[] acceleration) {
+        int rotation = getDisplay() == null
+                ? Surface.ROTATION_0
+                : getDisplay().getRotation();
+
+        switch (rotation) {
+            case Surface.ROTATION_90:
+                return -acceleration[1];
+            case Surface.ROTATION_180:
+                return -acceleration[0];
+            case Surface.ROTATION_270:
+                return acceleration[1];
+            case Surface.ROTATION_0:
+            default:
+                return acceleration[0];
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        // La precision n'a pas besoin d'etre utilisee pour controler la passerelle.
     }
 }
