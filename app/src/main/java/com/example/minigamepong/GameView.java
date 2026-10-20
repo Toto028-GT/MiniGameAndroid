@@ -16,8 +16,8 @@ import android.view.Surface;
 import android.view.View;
 
 public class GameView extends View implements SensorEventListener {
-    
-    enum GameState { MENU, PREVIEW,  PLAYING, GAME_OVER }
+
+    enum GameState { MENU, PREVIEW, PLAYING, GAME_OVER }
     enum ControlMode { JOYSTICK, TILT }
 
     /** L'activité implémente ceci pour ouvrir l'appareil photo. */
@@ -33,6 +33,7 @@ public class GameView extends View implements SensorEventListener {
     private static final int ROWS = 7;
     private static final int COLS = 7;
     private static final int START_LIVES = 3;
+    private static final float TILT_SENSITIVITY = 4f;
 
     // ---------------- Etat du jeu ----------------
     private float ballX, ballY, ballRadius;
@@ -42,6 +43,7 @@ public class GameView extends View implements SensorEventListener {
 
     private float paddleX;
     private float paddleW, paddleH, paddleTop;
+    private float paddleMaxSpeed;          // px / tick à fond de joystick ou d'inclinaison
 
     private final RectF[] bricks = new RectF[ROWS * COLS];
     private final Rect[] brickSrc = new Rect[ROWS * COLS];   // morceau d'image de chaque brique
@@ -56,9 +58,9 @@ public class GameView extends View implements SensorEventListener {
     private Bitmap photo;        // photo d'origine
     private Bitmap gridBitmap;   // photo recadrée + mise à la taille de la grille de briques
 
-    // ---------------- Boutons (menu / confirmation) ----------------
-    private final RectF playJoystick = new RectF();
-    private final RectF playInclinaison = new RectF();
+    // ---------------- Boutons ----------------
+    private final RectF playJoystickBtn = new RectF();
+    private final RectF playTiltBtn = new RectF();
     private final RectF retakeBtn = new RectF();
     private final RectF useBtn = new RectF();
     private final RectF replayBtn = new RectF();
@@ -79,18 +81,16 @@ public class GameView extends View implements SensorEventListener {
     private float joyBaseX, joyBaseY;
     private float joyKnobX, joyKnobY;
     private float joyRadius;
-    private float joyInput = 0f;
-    private float paddleMaxSpeed;
+    private float joyInput = 0f;           // -1 (gauche) .. +1 (droite)
     private final Paint joyBasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint joyKnobPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     // ---------------- Inclinaison de la tablette ----------------
-    private static final float TILT_SENSITIVITY = 4f;
     private final SensorManager sensorManager;
     private final Sensor accelerometer;
     private boolean sensorRegistered;
-    private float tiltX;
-    private float tiltInput;
+    private float tiltX;                   // accélération filtrée
+    private float tiltInput;               // -1 (gauche) .. +1 (droite)
 
     public GameView(Context context) {
         super(context);
@@ -142,7 +142,7 @@ public class GameView extends View implements SensorEventListener {
 
     public void startGame() {
         removeCallbacks(gameLoop);
-        registerTiltSensor();
+        registerTiltSensor();            // ne fait rien si on est en mode joystick
         post(gameLoop);
     }
 
@@ -173,13 +173,14 @@ public class GameView extends View implements SensorEventListener {
 
         // Boutons
         float bw = w * 0.5f, bh = h * 0.07f;
-        playJoystick.set(w / 2f - bw / 2, h / 2f - bh / 2, w / 2f + bw / 2, h / 2f + bh / 2);
+        playJoystickBtn.set(w / 2f - bw / 2, h * 0.42f, w / 2f + bw / 2, h * 0.42f + bh);
+        playTiltBtn.set(w / 2f - bw / 2, h * 0.52f, w / 2f + bw / 2, h * 0.52f + bh);
         retakeBtn.set(w / 2f - bw / 2, h * 0.70f, w / 2f + bw / 2, h * 0.70f + bh);
         useBtn.set(w / 2f - bw / 2, h * 0.80f, w / 2f + bw / 2, h * 0.80f + bh);
         replayBtn.set(w / 2f - bw / 2, h * 0.55f, w / 2f + bw / 2, h * 0.55f + bh);
         menuBtn.set(w / 2f - bw / 2, h * 0.66f, w / 2f + bw / 2, h * 0.66f + bh);
 
-        // Grille de briques (un peu plus hautes pour que l'image reste lisible)
+        // Grille de briques
         float margin = w * 0.04f;
         float gap = w * 0.008f;
         float top = h * 0.12f;
@@ -266,24 +267,32 @@ public class GameView extends View implements SensorEventListener {
         if (photoListener != null) photoListener.onPhotoRequested();
     }
 
+    /** Change le mode de contrôle et active / coupe l'accéléromètre en conséquence. */
+    private void setControlMode(ControlMode mode) {
+        controlMode = mode;
+        if (mode == ControlMode.TILT) {
+            registerTiltSensor();
+        } else {
+            unregisterTiltSensor();
+        }
+    }
+
     // ==================== Mise à jour ====================
     private void update() {
         if (gameState != GameState.PLAYING) return;
 
+        // Déplacement de la passerelle (joystick ou inclinaison selon le mode)
         float half = paddleW / 2f;
-        paddleX += joyInput * paddleMaxSpeed;
+        float horizontalInput = controlMode == ControlMode.TILT ? tiltInput : joyInput;
+        paddleX += horizontalInput * paddleMaxSpeed;   // si vous avez le delta-temps : * dt
         paddleX = Math.max(half, Math.min(getWidth() - half, paddleX));
 
-        // Pendant l'attente du lancement, la passerelle reste immobile.
+        // Balle posée : elle suit la passerelle
         if (ballStuck) {
             ballX = paddleX;
             ballY = paddleTop - ballRadius;
             return;
         }
-
-        float horizontalInput = controlMode == ControlMode.TILT ? tiltInput : joyInput;
-        paddleX += horizontalInput * paddleMaxSpeed;   // si vous avez le delta-temps : * dt
-        paddleX = Math.max(half, Math.min(getWidth() - half, paddleX));
 
         ballX += ballVX;
         ballY += ballVY;
@@ -363,14 +372,11 @@ public class GameView extends View implements SensorEventListener {
         float dy = ballY - cy;
 
         if (dx == 0 && dy == 0) {
-            // Centre dans la brique : on se base sur la vitesse
             ballVY = -ballVY;
         } else if (Math.abs(dx) > Math.abs(dy)) {
-            // Choc latéral
             if (dx < 0) { ballVX = -Math.abs(ballVX); ballX = b.left - ballRadius; }
             else        { ballVX =  Math.abs(ballVX); ballX = b.right + ballRadius; }
         } else {
-            // Choc vertical
             if (dy < 0) { ballVY = -Math.abs(ballVY); ballY = b.top - ballRadius; }
             else        { ballVY =  Math.abs(ballVY); ballY = b.bottom + ballRadius; }
         }
@@ -393,18 +399,27 @@ public class GameView extends View implements SensorEventListener {
         canvas.drawText(text, getWidth() / 2f, y, textPaint);
     }
 
+    /** Bouton arrondi ; le texte rétrécit s'il est trop long pour le bouton. */
     private void drawButton(Canvas canvas, RectF r, String label, int color) {
         btnPaint.setColor(color);
         canvas.drawRoundRect(r, r.height() / 4f, r.height() / 4f, btnPaint);
+
+        float savedSize = textPaint.getTextSize();
+        float maxWidth = r.width() * 0.9f;
+        float textWidth = textPaint.measureText(label);
+        if (textWidth > maxWidth) {
+            textPaint.setTextSize(savedSize * maxWidth / textWidth);
+        }
         textPaint.setTextAlign(Paint.Align.CENTER);
         float y = r.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f;
         canvas.drawText(label, r.centerX(), y, textPaint);
+        textPaint.setTextSize(savedSize);
     }
 
     private void drawMenu(Canvas canvas) {
         drawCentered(canvas, "CASSE-BRIQUES", getHeight() * 0.30f);
-        drawButton(canvas, playJoystick, "Play Joystick", Color.rgb(0, 160, 180));
-        drawButton(canvas, playInclinaison, "Play inclinaison", Color.rgb(0, 160, 180));
+        drawButton(canvas, playJoystickBtn, "Play joystick", Color.rgb(0, 160, 180));
+        drawButton(canvas, playTiltBtn, "Play inclinaison", Color.rgb(0, 160, 180));
     }
 
     private void drawPreview(Canvas canvas) {
@@ -422,11 +437,15 @@ public class GameView extends View implements SensorEventListener {
     }
 
     private void drawGame(Canvas canvas) {
-        // Briques
+        // Briques (morceaux de la photo)
         for (int i = 0; i < bricks.length; i++) {
             if (!brickAlive[i]) continue;
-            brickPaint.setColor(Color.rgb(30, 136, 229));
-            canvas.drawRoundRect(bricks[i], 8, 8, brickPaint);
+            if (gridBitmap != null && brickSrc[i] != null) {
+                canvas.drawBitmap(gridBitmap, brickSrc[i], bricks[i], bitmapPaint);
+            } else {
+                brickPaint.setColor(Color.rgb(30, 136, 229));
+                canvas.drawRoundRect(bricks[i], 8, 8, brickPaint);
+            }
         }
 
         // Passerelle
@@ -463,34 +482,27 @@ public class GameView extends View implements SensorEventListener {
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
+        float x = event.getX();
+        float y = event.getY();
 
         switch (gameState) {
             case MENU:
-                if (action == MotionEvent.ACTION_UP && (playJoystick.contains(event.getX(), event.getY()) || playInclinaison.contains(event.getX(), event.getY()))) {
-                    requestPhoto();
-                    if (playJoystick.contains(event.getX(), event.getY()) )
-                                controlMode =  ControlMode.JOYSTICK;
-                    else if (playInclinaison.contains(event.getX(), event.getY()) ) {
-                        controlMode =  ControlMode.TILT;
+                if (action == MotionEvent.ACTION_UP) {
+                    if (playJoystickBtn.contains(x, y)) {
+                        setControlMode(ControlMode.JOYSTICK);
+                        requestPhoto();
+                    } else if (playTiltBtn.contains(x, y)) {
+                        setControlMode(ControlMode.TILT);
+                        requestPhoto();
                     }
-                    if (controlMode == ControlMode.TILT) {
-                            registerTiltSensor();
-                        } else {
-                            unregisterTiltSensor();
-                        }
-                        invalidate();
-                    }
-                    resetGame();
-                    resetJoystick();
-                    gameState = GameState.PLAYING;
-
+                }
                 break;
 
             case PREVIEW:
                 if (action == MotionEvent.ACTION_UP) {
-                    if (retakeBtn.contains(event.getX(), event.getY())) {
+                    if (retakeBtn.contains(x, y)) {
                         requestPhoto();
-                    } else if (useBtn.contains(event.getX(), event.getY())) {
+                    } else if (useBtn.contains(x, y)) {
                         startPlaying();
                     }
                 }
@@ -498,63 +510,66 @@ public class GameView extends View implements SensorEventListener {
 
             case GAME_OVER:
                 if (action == MotionEvent.ACTION_UP) {
-                    if (replayBtn.contains(event.getX(), event.getY())) {
-                        startPlaying();                    // même photo
-                    } else if (menuBtn.contains(event.getX(), event.getY())) {
-                        gameState = GameState.MENU;        // Play -> nouvelle photo
+                    if (replayBtn.contains(x, y)) {
+                        startPlaying();                // même photo, même mode
+                    } else if (menuBtn.contains(x, y)) {
+                        gameState = GameState.MENU;    // choix du mode + nouvelle photo
                     }
                 }
                 break;
 
             case PLAYING:
                 if (controlMode == ControlMode.TILT) {
-                    if (action == MotionEvent.ACTION_UP && ballStuck) {
-                        launchBall();
-                    }
-                    return true;
+                    // En mode inclinaison, le doigt ne sert qu'à lancer la balle
+                    if (action == MotionEvent.ACTION_UP && ballStuck) launchBall();
+                    break;
                 }
-                switch (action) {
-                    case MotionEvent.ACTION_DOWN:
-                        joyActive = true;
-                        joyMoved = false;
-                        joyBaseX = joyKnobX = event.getX();
-                        joyBaseY = joyKnobY = event.getY();
-                        joyInput = 0f;
-                        break;
-
-                    case MotionEvent.ACTION_MOVE:
-                        if (!joyActive) break;
-                        float dx = event.getX() - joyBaseX;
-                        float dy = event.getY() - joyBaseY;
-
-                        // Le rond reste dans le cercle du joystick
-                        float dist = (float) Math.hypot(dx, dy);
-                        if (dist > joyRadius) {
-                            dx *= joyRadius / dist;
-                            dy *= joyRadius / dist;
-                        }
-                        joyKnobX = joyBaseX + dx;
-                        joyKnobY = joyBaseY + dy;
-
-                        // Seul l'axe horizontal commande la passerelle
-                        joyInput = dx / joyRadius;
-                        if (Math.abs(joyInput) < 0.01f) joyInput = 0f;
-                        else joyMoved = true;
-                        break;
-
-                    case MotionEvent.ACTION_UP:
-                        // Un simple tap (sans bouger) lance la balle
-                        if (ballStuck && !joyMoved) launchBall();
-                        resetJoystick();
-                        break;
-
-                    case MotionEvent.ACTION_CANCEL:
-                        resetJoystick();
-                        break;
-                }
+                handleJoystickTouch(event);
                 break;
         }
         return true;
+    }
+
+    private void handleJoystickTouch(MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                joyActive = true;
+                joyMoved = false;
+                joyBaseX = joyKnobX = event.getX();
+                joyBaseY = joyKnobY = event.getY();
+                joyInput = 0f;
+                break;
+
+            case MotionEvent.ACTION_MOVE:
+                if (!joyActive) break;
+                float dx = event.getX() - joyBaseX;
+                float dy = event.getY() - joyBaseY;
+
+                // Le rond reste dans le cercle du joystick
+                float dist = (float) Math.hypot(dx, dy);
+                if (dist > joyRadius) {
+                    dx *= joyRadius / dist;
+                    dy *= joyRadius / dist;
+                }
+                joyKnobX = joyBaseX + dx;
+                joyKnobY = joyBaseY + dy;
+
+                // Seul l'axe horizontal commande la passerelle
+                joyInput = dx / joyRadius;
+                if (Math.abs(joyInput) < 0.01f) joyInput = 0f;   // zone morte
+                else joyMoved = true;
+                break;
+
+            case MotionEvent.ACTION_UP:
+                // Un simple tap (sans bouger) lance la balle
+                if (ballStuck && !joyMoved) launchBall();
+                resetJoystick();
+                break;
+
+            case MotionEvent.ACTION_CANCEL:
+                resetJoystick();
+                break;
+        }
     }
 
     private void resetJoystick() {
@@ -563,6 +578,7 @@ public class GameView extends View implements SensorEventListener {
         joyInput = 0f;
     }
 
+    // ==================== Accéléromètre ====================
     private void registerTiltSensor() {
         if (controlMode != ControlMode.TILT || sensorRegistered
                 || sensorManager == null || accelerometer == null) {
@@ -571,14 +587,12 @@ public class GameView extends View implements SensorEventListener {
         sensorRegistered = sensorManager.registerListener(
                 this, accelerometer, SensorManager.SENSOR_DELAY_GAME);
         if (!sensorRegistered) {
-            controlMode = ControlMode.JOYSTICK;
+            controlMode = ControlMode.JOYSTICK;   // pas de capteur : retour au joystick
         }
     }
 
     private void unregisterTiltSensor() {
-        if (!sensorRegistered || sensorManager == null) {
-            return;
-        }
+        if (!sensorRegistered || sensorManager == null) return;
         sensorManager.unregisterListener(this);
         sensorRegistered = false;
         tiltX = 0f;
@@ -592,15 +606,13 @@ public class GameView extends View implements SensorEventListener {
             return;
         }
 
-        // L'axe horizontal depend de la rotation actuelle de l'ecran.
+        // L'axe horizontal dépend de la rotation actuelle de l'écran
         float screenHorizontalAcceleration = getScreenHorizontalAcceleration(event.values);
 
-        // Filtre passe-bas : les petits tremblements de la tablette sont attenues.
+        // Filtre passe-bas : les petits tremblements de la tablette sont atténués
         tiltX = tiltX * 0.85f + screenHorizontalAcceleration * 0.15f;
         float input = -tiltX / TILT_SENSITIVITY;
-        if (Math.abs(input) < 0.08f) {
-            input = 0f;
-        }
+        if (Math.abs(input) < 0.08f) input = 0f;   // zone morte
         tiltInput = Math.max(-1f, Math.min(1f, input));
     }
 
@@ -610,20 +622,16 @@ public class GameView extends View implements SensorEventListener {
                 : getDisplay().getRotation();
 
         switch (rotation) {
-            case Surface.ROTATION_90:
-                return -acceleration[1];
-            case Surface.ROTATION_180:
-                return -acceleration[0];
-            case Surface.ROTATION_270:
-                return acceleration[1];
+            case Surface.ROTATION_90:  return -acceleration[1];
+            case Surface.ROTATION_180: return -acceleration[0];
+            case Surface.ROTATION_270: return acceleration[1];
             case Surface.ROTATION_0:
-            default:
-                return acceleration[0];
+            default:                   return acceleration[0];
         }
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        // La precision n'a pas besoin d'etre utilisee pour controler la passerelle.
+        // Non utilisé
     }
 }
