@@ -34,6 +34,7 @@ android {
 dependencies {
     implementation(libs.activity.ktx)
     implementation(libs.appcompat)
+    implementation(libs.camera.core)
     implementation(libs.constraintlayout)
     implementation(libs.material)
     testImplementation(libs.junit)
