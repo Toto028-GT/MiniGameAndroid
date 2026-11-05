@@ -74,6 +74,9 @@ public class GameView extends View {
     public void stopGame() {
         removeCallbacks(gameLoop);
         tiltController.disable();
+        if (model.getGameState() == GameState.PLAYING) {
+            model.setGameState(GameState.PAUSED);
+        }
     }
 
     @Override
@@ -132,12 +135,26 @@ public class GameView extends View {
                 }
                 break;
             case PLAYING:
+                if (action == MotionEvent.ACTION_DOWN && renderer.isPauseButton(x, y)) {
+                    joystick.reset();
+                    model.setGameState(GameState.PAUSED);
+                    break;
+                }
                 if (controlMode == ControlMode.TILT) {
                     if (action == MotionEvent.ACTION_UP && model.isBallStuck()) {
                         model.launchBall();
                     }
                 } else {
                     joystick.handleTouch(event, model.isBallStuck(), model::launchBall);
+                }
+                break;
+            case PAUSED:
+                if (action == MotionEvent.ACTION_UP) {
+                    if (renderer.isResumeButton(x, y)) {
+                        model.setGameState(GameState.PLAYING);
+                    } else if (renderer.isQuitButton(x, y)) {
+                        model.setGameState(GameState.MENU);
+                    }
                 }
                 break;
             default:
