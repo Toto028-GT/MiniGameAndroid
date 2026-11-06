@@ -12,7 +12,7 @@ public final class GameModel {
     public static final int ROWS = 14;
     public static final int COLS = 14;
     private static final int START_LIVES = 3;
-    private static final int MAX_BALLS = 30;
+    private static final int MAX_BALLS = 50;
 
     // --- Réglages des bonus / malus ---
     private static final float SPAWN_PER_SECOND = 0.18f;   // ~1 objet toutes les 5-6 s
@@ -386,6 +386,8 @@ public final class GameModel {
             return false;
         }
 
+        keepBallMovingVertically(b);
+
         collidePaddle(b);
         if (!collideWall(b)) {
             collideBricks(b);
@@ -477,6 +479,21 @@ public final class GameModel {
         } else {
             b.vy = Math.abs(b.vy);
             b.y = brick.bottom + ballRadius;
+        }
+    }
+
+    /** Empêche les trajectoires quasi horizontales (balle qui ne fait que des allers-retours gauche/droite). */
+    private void keepBallMovingVertically(Ball b) {
+        float speed = (float) Math.hypot(b.vx, b.vy);
+        if (speed == 0f) {
+            return;
+        }
+        float minVy = speed * 0.3f;   // ~17° minimum par rapport à l'horizontale
+        if (Math.abs(b.vy) < minVy) {
+            float signY = b.vy > 0 ? 1f : -1f;   // si vy == 0, la balle part vers le haut
+            float signX = b.vx < 0 ? -1f : 1f;
+            b.vy = signY * minVy;
+            b.vx = signX * (float) Math.sqrt(speed * speed - minVy * minVy);
         }
     }
 
